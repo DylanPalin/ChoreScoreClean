@@ -3,7 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  SectionList,
   TouchableOpacity,
   Alert,
   RefreshControl,
@@ -15,6 +15,7 @@ import AddChoreModal from '../components/AddChoreModal';
 export default function HomeScreen() {
   const { profile, user } = useAuth();
   const [chores, setChores] = useState([]);
+  const [userPoints, setUserPoints] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -23,6 +24,9 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadChores();
+    if (!isParent && user?.id) {
+      loadUserPoints();
+    }
 
     const subscription = supabase
       .channel('chores-changes')
@@ -36,6 +40,9 @@ export default function HomeScreen() {
         },
         () => {
           loadChores();
+          if (!isParent && user?.id) {
+            loadUserPoints();
+          }
         }
       )
       .subscribe();
@@ -67,7 +74,43 @@ export default function HomeScreen() {
     }
   };
 
+  const loadUserPoints = async () => {
+    try {
+      const { data: points, error } = await supabase
+        .from('points_history')
+        .select('points_earned')
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      const totalPoints = points?.reduce((sum, p) => sum + p.points_earned, 0) || 0;
+      setUserPoints(totalPoints);
+    } catch (error) {
+      console.error('Error loading user points:', error);
+    }
+  };
+
+  const isChoreAvailable = (chore) => {
+    if (!chore.available_at) return true;
+    return new Date(chore.available_at) <= new Date();
+  };
+
+  const getNextWeekDate = () => {
+    const next = new Date();
+    next.setDate(next.getDate() + 7);
+    return next.toISOString();
+  };
+
   const handleMarkComplete = async (choreId) => {
+    const chore = chores.find(c => c.id === choreId);
+    
+    // Optimistically update the UI immediately
+    setChores(chores.map(c => 
+      c.id === choreId 
+        ? { ...c, status: 'pending-approval', completed_at: new Date().toISOString() } 
+        : c
+    ));
+
     try {
       const { error } = await supabase
         .from('chores')
@@ -77,20 +120,48 @@ export default function HomeScreen() {
         })
         .eq('id', choreId);
 
-      if (error) throw error;
+      if (error) {
+        setChores(chores.map(c => 
+          c.id === choreId 
+            ? { ...c, status: 'pending', completed_at: null } 
+            : c
+        ));
+        throw error;
+      }
     } catch (error) {
       Alert.alert('Error', error.message);
     }
   };
 
   const handleApprove = async (chore) => {
+    const isWeekly = chore.recurrence === 'weekly';
+    
+    // Optimistic update
+    setChores(chores.map(c => 
+      c.id === chore.id 
+        ? { 
+            ...c, 
+            status: 'completed', 
+            approved_at: new Date().toISOString(),
+            available_at: isWeekly ? getNextWeekDate() : c.available_at,
+          } 
+        : c
+    ));
+
     try {
+      const updateData = {
+        status: 'completed',
+        approved_at: new Date().toISOString(),
+      };
+
+      // If weekly, set next available date
+      if (isWeekly) {
+        updateData.available_at = getNextWeekDate();
+      }
+
       const { error: choreError } = await supabase
         .from('chores')
-        .update({
-          status: 'completed',
-          approved_at: new Date().toISOString(),
-        })
+        .update(updateData)
         .eq('id', chore.id);
 
       if (choreError) throw choreError;
@@ -107,13 +178,42 @@ export default function HomeScreen() {
 
       if (pointsError) throw pointsError;
 
+      // Only create new instance for daily recurring
+      if (chore.recurrence === 'daily') {
+        const { error: recurError } = await supabase
+          .from('chores')
+          .insert([
+            {
+              title: chore.title,
+              description: chore.description,
+              points: chore.points,
+              assigned_to: chore.assigned_to,
+              created_by: chore.created_by,
+              family_id: chore.family_id,
+              status: 'pending',
+              recurrence: chore.recurrence,
+              recurrence_day: chore.recurrence_day,
+              available_at: new Date().toISOString(),
+            },
+          ]);
+
+        if (recurError) throw recurError;
+      }
+
       Alert.alert('Success', `${chore.assigned.name} earned ${chore.points} points!`);
     } catch (error) {
+      loadChores();
       Alert.alert('Error', error.message);
     }
   };
 
   const handleReject = async (choreId) => {
+    setChores(chores.map(c => 
+      c.id === choreId 
+        ? { ...c, status: 'pending', completed_at: null } 
+        : c
+    ));
+
     try {
       const { error } = await supabase
         .from('chores')
@@ -125,6 +225,7 @@ export default function HomeScreen() {
 
       if (error) throw error;
     } catch (error) {
+      loadChores();
       Alert.alert('Error', error.message);
     }
   };
@@ -155,21 +256,64 @@ export default function HomeScreen() {
     );
   };
 
-  const myChores = chores.filter((c) => c.assigned_to === user.id);
-  const pendingApproval = chores.filter((c) => c.status === 'pending-approval');
-  const activeChores = chores.filter((c) => c.status !== 'completed');
+  // Organize chores into sections
+  const organizeChoresToSections = () => {
+    const myChores = isParent ? chores : chores.filter(c => c.assigned_to === user.id);
+    
+    const pendingApproval = myChores.filter(c => c.status === 'pending-approval');
+    const activePending = myChores.filter(c => 
+      c.status === 'pending' && 
+      c.recurrence !== 'weekly' && 
+      isChoreAvailable(c)
+    );
+    const weeklyAvailable = myChores.filter(c => 
+      c.status === 'pending' && 
+      c.recurrence === 'weekly' &&
+      isChoreAvailable(c)
+    );
+    const weeklyCompleted = myChores.filter(c => 
+      c.status === 'completed' && 
+      c.recurrence === 'weekly' &&
+      !isChoreAvailable(c)
+    );
+    const archived = myChores.filter(c => 
+      c.status === 'completed' && 
+      (c.recurrence === 'none' || c.recurrence === 'daily' || !c.recurrence)
+    );
 
-  const renderChore = ({ item }) => {
+    const sections = [];
+
+    if (pendingApproval.length > 0) {
+      sections.push({ title: '⭐ Needs Approval', data: pendingApproval });
+    }
+    if (activePending.length > 0) {
+      sections.push({ title: '📋 To Do', data: activePending });
+    }
+    if (weeklyAvailable.length > 0) {
+      sections.push({ title: '🗓️ Weekly Chores', data: weeklyAvailable });
+    }
+    if (weeklyCompleted.length > 0) {
+      sections.push({ title: '✅ Completed This Week', data: weeklyCompleted, greyed: true });
+    }
+    if (archived.length > 0) {
+      sections.push({ title: '📦 Archived', data: archived, greyed: true });
+    }
+
+    return sections;
+  };
+
+  const renderChore = ({ item, section }) => {
     const isMyChore = item.assigned_to === user.id;
     const isPending = item.status === 'pending';
     const isPendingApproval = item.status === 'pending-approval';
     const isCompleted = item.status === 'completed';
+    const isGreyed = section.greyed || !isChoreAvailable(item);
 
     return (
       <View style={[
         styles.choreCard,
         isPendingApproval && styles.choreCardApproval,
-        isCompleted && styles.choreCardCompleted,
+        isGreyed && styles.choreCardGreyed,
       ]}>
         <View style={styles.choreHeader}>
           <View style={styles.choreInfo}>
@@ -177,6 +321,16 @@ export default function HomeScreen() {
             <Text style={styles.choreAssignee}>
               {item.assigned.avatar} {item.assigned.name}
             </Text>
+            {item.recurrence && item.recurrence !== 'none' && (
+              <View style={styles.recurrenceBadge}>
+                <Text style={styles.recurrenceText}>
+                  🔄 {item.recurrence === 'daily' ? 'Daily' : 'Weekly'}
+                  {item.recurrence === 'weekly' && item.recurrence_day !== null && 
+                    ` (${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][item.recurrence_day]})`
+                  }
+                </Text>
+              </View>
+            )}
           </View>
           <View style={styles.chorePoints}>
             <Text style={styles.pointsText}>{item.points}</Text>
@@ -188,7 +342,7 @@ export default function HomeScreen() {
           <Text style={styles.choreDescription}>{item.description}</Text>
         )}
 
-        {!isParent && isMyChore && isPending && (
+        {!isParent && isMyChore && isPending && isChoreAvailable(item) && (
           <TouchableOpacity
             style={styles.completeButton}
             onPress={() => handleMarkComplete(item.id)}
@@ -232,20 +386,14 @@ export default function HomeScreen() {
     );
   };
 
-  const choresToShow = isParent ? activeChores : myChores.filter(c => c.status !== 'completed');
+  const sections = organizeChoresToSections();
 
   return (
     <View style={styles.container}>
       {!isParent && (
         <View style={styles.pointsBanner}>
           <Text style={styles.pointsBannerLabel}>Your Points</Text>
-          <Text style={styles.pointsBannerValue}>🏆 Loading...</Text>
-        </View>
-      )}
-
-      {isParent && pendingApproval.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>⭐ Needs Your Approval</Text>
+          <Text style={styles.pointsBannerValue}>🏆 {userPoints}</Text>
         </View>
       )}
 
@@ -258,9 +406,14 @@ export default function HomeScreen() {
         </TouchableOpacity>
       )}
 
-      <FlatList
-        data={choresToShow}
+      <SectionList
+        sections={sections}
         renderItem={renderChore}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>{section.title}</Text>
+          </View>
+        )}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         refreshControl={
@@ -270,7 +423,7 @@ export default function HomeScreen() {
           <View style={styles.emptyState}>
             <Text style={styles.emptyEmoji}>🎉</Text>
             <Text style={styles.emptyText}>
-              {isParent ? 'No active chores' : 'All done!'}
+              {isParent ? 'No chores yet' : 'All done!'}
             </Text>
           </View>
         }
@@ -290,14 +443,14 @@ const styles = StyleSheet.create({
   pointsBanner: { backgroundColor: '#2563eb', padding: 20, alignItems: 'center' },
   pointsBannerLabel: { color: 'white', fontSize: 14, opacity: 0.9 },
   pointsBannerValue: { color: 'white', fontSize: 32, fontWeight: 'bold', marginTop: 4 },
-  section: { padding: 16, paddingBottom: 8 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#1f2937' },
   addButton: { backgroundColor: '#2563eb', margin: 16, padding: 16, borderRadius: 12, alignItems: 'center' },
   addButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   list: { padding: 16 },
+  sectionHeader: { marginTop: 8, marginBottom: 8 },
+  sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#1f2937' },
   choreCard: { backgroundColor: 'white', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e5e7eb' },
   choreCardApproval: { backgroundColor: '#fef3c7', borderColor: '#fbbf24', borderWidth: 2 },
-  choreCardCompleted: { opacity: 0.6 },
+  choreCardGreyed: { opacity: 0.5, backgroundColor: '#f3f4f6' },
   choreHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   choreInfo: { flex: 1 },
   choreTitle: { fontSize: 16, fontWeight: 'bold', color: '#1f2937', marginBottom: 4 },
@@ -306,6 +459,8 @@ const styles = StyleSheet.create({
   pointsText: { fontSize: 20, fontWeight: 'bold', color: '#2563eb' },
   pointsLabel: { fontSize: 12, color: '#2563eb' },
   choreDescription: { fontSize: 14, color: '#6b7280', marginBottom: 12 },
+  recurrenceBadge: { backgroundColor: '#f3e8ff', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginTop: 8 },
+  recurrenceText: { fontSize: 12, color: '#7c3aed', fontWeight: '600' },
   completeButton: { backgroundColor: '#10b981', padding: 12, borderRadius: 8, alignItems: 'center', marginTop: 8 },
   completeButtonText: { color: 'white', fontWeight: 'bold' },
   statusBadge: { backgroundColor: '#fbbf24', padding: 12, borderRadius: 8, alignItems: 'center', marginTop: 8 },
@@ -321,4 +476,3 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 64, marginBottom: 16 },
   emptyText: { fontSize: 18, color: '#6b7280' },
 });
-

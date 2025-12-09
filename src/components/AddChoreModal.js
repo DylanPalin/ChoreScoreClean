@@ -18,8 +18,20 @@ export default function AddChoreModal({ visible, onClose, onSuccess }) {
   const [description, setDescription] = useState("");
   const [points, setPoints] = useState("20");
   const [assignedTo, setAssignedTo] = useState(null);
+  const [recurrence, setRecurrence] = useState("none");
+  const [recurrenceDay, setRecurrenceDay] = useState(1); // Monday default
   const [familyMembers, setFamilyMembers] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  const weekDays = [
+    { label: 'Sunday', value: 0 },
+    { label: 'Monday', value: 1 },
+    { label: 'Tuesday', value: 2 },
+    { label: 'Wednesday', value: 3 },
+    { label: 'Thursday', value: 4 },
+    { label: 'Friday', value: 5 },
+    { label: 'Saturday', value: 6 },
+  ];
 
   useEffect(() => {
     if (visible) {
@@ -56,20 +68,22 @@ export default function AddChoreModal({ visible, onClose, onSuccess }) {
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      const choreData = {
+        title: title.trim(),
+        description: description.trim() || null,
+        points: pointsNum,
+        assigned_to: assignedTo,
+        created_by: user.id,
+        family_id: profile.family_id,
+        status: "pending",
+        recurrence: recurrence,
+        recurrence_day: recurrence === 'weekly' ? recurrenceDay : null,
+      };
+
+      const { error } = await supabase
         .from("chores")
-        .insert([
-          {
-            title: title.trim(),
-            description: description.trim() || null,
-            points: pointsNum,
-            assigned_to: assignedTo,
-            created_by: user.id,
-            family_id: profile.family_id,
-            status: "pending",
-          },
-        ])
-        .select(); // <-- optional, gets the inserted chore
+        .insert([choreData])
+        .select();
 
       if (error) throw error;
 
@@ -77,8 +91,9 @@ export default function AddChoreModal({ visible, onClose, onSuccess }) {
       setTitle("");
       setDescription("");
       setPoints("20");
+      setRecurrence("none");
+      setRecurrenceDay(1);
 
-      // Refresh list and close modal
       onSuccess();
       onClose();
     } catch (error) {
@@ -153,6 +168,79 @@ export default function AddChoreModal({ visible, onClose, onSuccess }) {
               <Text style={styles.noMembers}>
                 No children in your family yet. Add family members first!
               </Text>
+            )}
+
+            <Text style={styles.label}>Recurrence</Text>
+            <View style={styles.recurrenceOptions}>
+              <TouchableOpacity
+                style={[
+                  styles.recurrenceButton,
+                  recurrence === 'none' && styles.recurrenceButtonActive,
+                ]}
+                onPress={() => setRecurrence('none')}
+              >
+                <Text style={[
+                  styles.recurrenceText,
+                  recurrence === 'none' && styles.recurrenceTextActive,
+                ]}>
+                  One-time
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.recurrenceButton,
+                  recurrence === 'daily' && styles.recurrenceButtonActive,
+                ]}
+                onPress={() => setRecurrence('daily')}
+              >
+                <Text style={[
+                  styles.recurrenceText,
+                  recurrence === 'daily' && styles.recurrenceTextActive,
+                ]}>
+                  Daily
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.recurrenceButton,
+                  recurrence === 'weekly' && styles.recurrenceButtonActive,
+                ]}
+                onPress={() => setRecurrence('weekly')}
+              >
+                <Text style={[
+                  styles.recurrenceText,
+                  recurrence === 'weekly' && styles.recurrenceTextActive,
+                ]}>
+                  Weekly
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {recurrence === 'weekly' && (
+              <>
+                <Text style={styles.label}>Day of Week</Text>
+                <View style={styles.daySelector}>
+                  {weekDays.map((day) => (
+                    <TouchableOpacity
+                      key={day.value}
+                      style={[
+                        styles.dayButton,
+                        recurrenceDay === day.value && styles.dayButtonActive,
+                      ]}
+                      onPress={() => setRecurrenceDay(day.value)}
+                    >
+                      <Text style={[
+                        styles.dayText,
+                        recurrenceDay === day.value && styles.dayTextActive,
+                      ]}>
+                        {day.label.substring(0, 3)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
             )}
 
             <Text style={styles.label}>Points</Text>
@@ -242,6 +330,57 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     textAlign: "center",
     padding: 20,
+  },
+  recurrenceOptions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  recurrenceButton: {
+    flex: 1,
+    backgroundColor: "#f9fafb",
+    borderWidth: 2,
+    borderColor: "#e5e7eb",
+    borderRadius: 8,
+    padding: 12,
+    alignItems: "center",
+  },
+  recurrenceButtonActive: {
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
+  },
+  recurrenceText: {
+    fontSize: 14,
+    color: "#6b7280",
+    fontWeight: "600",
+  },
+  recurrenceTextActive: {
+    color: "#2563eb",
+  },
+  daySelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  dayButton: {
+    backgroundColor: "#f9fafb",
+    borderWidth: 2,
+    borderColor: "#e5e7eb",
+    borderRadius: 8,
+    padding: 10,
+    minWidth: 70,
+    alignItems: "center",
+  },
+  dayButtonActive: {
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
+  },
+  dayText: {
+    fontSize: 12,
+    color: "#6b7280",
+    fontWeight: "600",
+  },
+  dayTextActive: {
+    color: "#2563eb",
   },
   submitButton: {
     backgroundColor: "#2563eb",
