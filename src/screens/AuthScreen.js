@@ -136,7 +136,7 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1f1a23ff',
+    backgroundColor: '#e5e7eb',
   },
   scrollContent: {
     flexGrow: 1,
